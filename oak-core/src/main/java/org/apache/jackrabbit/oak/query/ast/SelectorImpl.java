@@ -152,7 +152,9 @@ public class SelectorImpl extends SourceImpl {
     private Cursor cursor;
     private IndexRow currentRow;
     private int scanCount;
-    
+    private int processedResults;
+    private boolean processingComplete;
+
     private Tree lastTree;
     private String lastPath;
 
@@ -432,6 +434,7 @@ public class SelectorImpl extends SourceImpl {
                 // correct results
             } else if (currentRow.isVirtualRow()) {
                 // this is a virtual row and should be selected as is
+                processedResults++;
                 return true;
             } else {
                 // we must check whether the _child_ is readable
@@ -449,8 +452,12 @@ public class SelectorImpl extends SourceImpl {
                 }
             }
             if (evaluateCurrentRow()) {
+                processedResults++;
                 return true;
             }
+        }
+        if (cursor != null) {
+            processingComplete = true;
         }
         cursor = null;
         currentRow = null;
@@ -789,10 +796,7 @@ public class SelectorImpl extends SourceImpl {
 
     @Override
     public long getSize(SizePrecision precision, long max) {
-        if (cursor == null) {
-            return -1;
-        }
-        return cursor.getSize(precision, max);
+        return processingComplete ? processedResults : cursor == null ? -1 : cursor.getSize(precision, max);
     }
 
     @Override
