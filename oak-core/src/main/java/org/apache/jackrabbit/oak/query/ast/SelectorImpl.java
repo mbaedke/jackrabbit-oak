@@ -434,7 +434,9 @@ public class SelectorImpl extends SourceImpl {
                 // correct results
             } else if (currentRow.isVirtualRow()) {
                 // this is a virtual row and should be selected as is
-                processedResults++;
+                if (!processingComplete) {
+                    processedResults++;
+                }
                 return true;
             } else {
                 // we must check whether the _child_ is readable
@@ -452,7 +454,9 @@ public class SelectorImpl extends SourceImpl {
                 }
             }
             if (evaluateCurrentRow()) {
-                processedResults++;
+                if (!processingComplete) {
+                    processedResults++;
+                }
                 return true;
             }
         }
