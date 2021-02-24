@@ -311,18 +311,22 @@ public class SelectorImpl extends SourceImpl {
 
     @Override
     public void execute(NodeState rootState) {
-        QueryIndex index = plan.getIndex();
-        if (index == null) {
-            cursor = Cursors.newPathCursor(new ArrayList<String>(), query.getSettings());
-            return;
-        }
-        IndexPlan p = plan.getIndexPlan();
-        if (p != null) {
-            p.setFilter(createFilter(false));
-            AdvancedQueryIndex adv = (AdvancedQueryIndex) index;
-            cursor = adv.query(p, rootState);
-        } else {
-            cursor = index.query(createFilter(false), rootState);
+        try {
+            QueryIndex index = plan.getIndex();
+            if (index == null) {
+                cursor = Cursors.newPathCursor(new ArrayList<String>(), query.getSettings());
+                return;
+            }
+            IndexPlan p = plan.getIndexPlan();
+            if (p != null) {
+                p.setFilter(createFilter(false));
+                AdvancedQueryIndex adv = (AdvancedQueryIndex) index;
+                cursor = adv.query(p, rootState);
+            } else {
+                cursor = index.query(createFilter(false), rootState);
+            }
+        } finally {
+            processedResults = 0;
         }
     }
 
