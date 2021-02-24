@@ -70,7 +70,7 @@ public class PrefetchIterator<K> implements Iterator<K> {
             prefetchIterator = null;
         }
         boolean result = it.hasNext();
-        if (!result) {
+        if (!result && size == -1) {
             size = position;
         }
         return result;
