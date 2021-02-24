@@ -79,6 +79,7 @@ import org.apache.lucene.document.Document;
 import org.apache.lucene.facet.FacetResult;
 import org.apache.lucene.facet.Facets;
 import org.apache.lucene.facet.LabelAndValue;
+import org.apache.lucene.index.AtomicReaderContext;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FieldInfos;
@@ -118,6 +119,7 @@ import org.apache.lucene.search.highlight.TextFragment;
 import org.apache.lucene.search.postingshighlight.PostingsHighlighter;
 import org.apache.lucene.search.spell.SuggestWord;
 import org.apache.lucene.search.suggest.Lookup;
+import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.Version;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -565,6 +567,25 @@ public class LucenePropertyIndex implements AdvancedQueryIndex, QueryIndex, Nati
                 checkState(indexNode != null);
                 try {
                     IndexSearcher searcher = indexNode.getSearcher();
+                    List<AtomicReaderContext> leaves = searcher.getIndexReader().leaves();
+                    boolean foundLiveDocs = false;
+                    int size = 0;
+                    for (int k = 0; k < leaves.size(); k++) {
+                        AtomicReaderContext atomicReaderContext = leaves.get(k);
+                        int maxDoc = atomicReaderContext.reader().maxDoc();
+                        Bits liveDocs = MultiFields.getLiveDocs(atomicReaderContext.reader());
+                        if (liveDocs != null) {
+                            foundLiveDocs = true;
+                            for (int j = 0; j < maxDoc; j++) {
+                                if (liveDocs.get(j)) {
+                                    size++;
+                                }
+                            }
+                        }
+                    }
+                    if (foundLiveDocs) {
+                        return size;
+                    }
                     LuceneRequestFacade luceneRequestFacade = getLuceneRequest(plan, augmentorFactory, searcher.getIndexReader());
                     if (luceneRequestFacade.getLuceneRequest() instanceof Query) {
                         Query query = (Query) luceneRequestFacade.getLuceneRequest();
