@@ -118,21 +118,23 @@ public class PrefetchIterator<K> implements Iterator<K> {
             long nanos = System.nanoTime();
             end = nanos + timeout * 1000 * 1000;
         }
-        while (true) {
-            if (!it.hasNext()) {
-                size = position;
-                break;
-            }
-            if (position > maxPrefetch) {
-                break;
-            }
-            if (position > minPrefetch) {
-                if (end == 0 || System.nanoTime() > end) {
+        if (end > 0 || minPrefetch > 0) {
+            while (true) {
+                if (!it.hasNext()) {
+                    size = position;
                     break;
                 }
+                if (position > maxPrefetch) {
+                    break;
+                }
+                if (position > minPrefetch) {
+                    if (end == 0 || System.nanoTime() > end) {
+                        break;
+                    }
+                }
+                position++;
+                list.add(it.next());
             }
-            position++;
-            list.add(it.next());
         }
         if (list.size() > 0) {
             prefetchIterator = list.iterator();
