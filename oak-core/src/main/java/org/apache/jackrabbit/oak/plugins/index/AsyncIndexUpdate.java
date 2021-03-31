@@ -268,6 +268,8 @@ public class AsyncIndexUpdate implements Runnable, Closeable {
 
         private boolean hasLease = false;
 
+        private boolean closed;
+
         public AsyncUpdateCallback(NodeStore store, String name,
                 long leaseTimeOut, String checkpoint,
                 AsyncIndexStats indexStats, AtomicBoolean forcedStop) {
@@ -356,12 +358,13 @@ public class AsyncIndexUpdate implements Runnable, Closeable {
         }
 
         void close() throws CommitFailedException {
-            if (isLeaseCheckEnabled(leaseTimeOut)) {
+            if (!closed && isLeaseCheckEnabled(leaseTimeOut)) {
                 NodeBuilder builder = store.getRoot().builder();
                 NodeBuilder async = builder.child(ASYNC);
                 async.removeProperty(leaseName);
                 mergeWithConcurrencyCheck(store, validatorProviders, builder,
                         async.getString(name), lease, name);
+                closed = true;
             }
         }
 
@@ -475,110 +478,117 @@ public class AsyncIndexUpdate implements Runnable, Closeable {
         AsyncUpdateCallback callback = newAsyncUpdateCallback(store,
                 name, leaseTimeOut, beforeCheckpoint, indexStats,
                 forcedStopFlag);
-        if (beforeCheckpoint != null) {
-            NodeState state = store.retrieve(beforeCheckpoint);
-            if (state == null) {
-                // to make sure we're not reading a stale root rev, we're
-                // attempting a write+read via the lease-grab mechanics
-                try {
-                    callback.initLease();
-                } catch (CommitFailedException e) {
-                    indexStats.failed(e);
-                    return;
-                }
-                root = store.getRoot();
-                beforeCheckpoint = root.getChildNode(ASYNC).getString(name);
-                if (beforeCheckpoint != null) {
-                    state = store.retrieve(beforeCheckpoint);
-                    callback.setCheckpoint(beforeCheckpoint);
-                }
-            }
 
-            if (state == null) {
-                log.warn(
-                        "[{}] Failed to retrieve previously indexed checkpoint {}; re-running the initial index update",
-                        name, beforeCheckpoint);
-                beforeCheckpoint = null;
-                callback.setCheckpoint(beforeCheckpoint);
-                before = MISSING_NODE;
-            } else if (noVisibleChanges(state, root) && !switchOnSync) {
-                log.debug(
-                        "[{}] No changes since last checkpoint; skipping the index update",
-                        name);
-                postAsyncRunStatsStatus(indexStats);
-                return;
-            } else {
-                before = state;
-            }
-        } else {
-            log.info("[{}] Initial index update", name);
-            before = MISSING_NODE;
-        }
-
-        // there are some recent changes, so let's create a new checkpoint
-        String afterTime = now();
-        String oldThreadName = Thread.currentThread().getName();
-        boolean threadNameChanged = false;
-        String afterCheckpoint = store.checkpoint(lifetime, ImmutableMap.of(
-                "creator", AsyncIndexUpdate.class.getSimpleName(),
-                "created", afterTime,
-                "thread", oldThreadName,
-                "name", name));
-        NodeState after = store.retrieve(afterCheckpoint);
-        if (after == null) {
-            log.debug(
-                    "[{}] Unable to retrieve newly created checkpoint {}, skipping the index update",
-                    name, afterCheckpoint);
-            //Do not update the status as technically the run is not complete
-            return;
-        }
-
-        String checkpointToRelease = afterCheckpoint;
-        boolean updatePostRunStatus = false;
         try {
-            String newThreadName = "async-index-update-" + name;
-            log.trace("Switching thread name to {}", newThreadName);
-            threadNameChanged = true;
-            Thread.currentThread().setName(newThreadName);
-            updatePostRunStatus = updateIndex(before, beforeCheckpoint, after,
-                    afterCheckpoint, afterTime, callback);
+            // to make sure we're not reading a stale root rev, we're
+            // attempting a write+read via the lease-grab mechanics
+            try {
+                callback.initLease();
+            } catch (CommitFailedException e) {
+                indexStats.failed(e);
+                return;
+            }
+            if (beforeCheckpoint != null) {
+                NodeState state = store.retrieve(beforeCheckpoint);
+                if (state == null) {
+                    root = store.getRoot();
+                    beforeCheckpoint = root.getChildNode(ASYNC).getString(name);
+                    if (beforeCheckpoint != null) {
+                        state = store.retrieve(beforeCheckpoint);
+                        callback.setCheckpoint(beforeCheckpoint);
+                    }
+                }
 
-            // the update succeeded, i.e. it no longer fails
-            if (indexStats.didLastIndexingCycleFailed()) {
-                indexStats.fixed();
+                if (state == null) {
+                    log.warn(
+                            "[{}] Failed to retrieve previously indexed checkpoint {}; re-running the initial index update",
+                            name, beforeCheckpoint);
+                    beforeCheckpoint = null;
+                    callback.setCheckpoint(beforeCheckpoint);
+                    before = MISSING_NODE;
+                } else if (noVisibleChanges(state, root) && !switchOnSync) {
+                    log.debug(
+                            "[{}] No changes since last checkpoint; skipping the index update",
+                            name);
+                    postAsyncRunStatsStatus(indexStats);
+                    return;
+                } else {
+                    before = state;
+                }
+            } else {
+                log.info("[{}] Initial index update", name);
+                before = MISSING_NODE;
             }
 
-            // the update succeeded, so we can release the earlier checkpoint
-            // otherwise the new checkpoint associated with the failed update
-            // will get released in the finally block
-            checkpointToRelease = beforeCheckpoint;
-            indexStats.setReferenceCheckpoint(afterCheckpoint);
-            indexStats.setProcessedCheckpoint("");
-            indexStats.releaseTempCheckpoint(afterCheckpoint);
-
-        } catch (Exception e) {
-            indexStats.failed(e);
-
-        } finally {
-            if (threadNameChanged) {
-                log.trace("Switching thread name back to {}", oldThreadName);
-                Thread.currentThread().setName(oldThreadName);
+            // there are some recent changes, so let's create a new checkpoint
+            String afterTime = now();
+            String oldThreadName = Thread.currentThread().getName();
+            boolean threadNameChanged = false;
+            String afterCheckpoint = store.checkpoint(lifetime, ImmutableMap.of(
+                    "creator", AsyncIndexUpdate.class.getSimpleName(),
+                    "created", afterTime,
+                    "thread", oldThreadName,
+                    "name", name));
+            NodeState after = store.retrieve(afterCheckpoint);
+            if (after == null) {
+                log.debug(
+                        "[{}] Unable to retrieve newly created checkpoint {}, skipping the index update",
+                        name, afterCheckpoint);
+                //Do not update the status as technically the run is not complete
+                return;
             }
-            // null during initial indexing
-            // and skip release if this cp was used in a split operation
-            if (checkpointToRelease != null
-                    && !checkpointToRelease.equals(taskSplitter
-                            .getLastReferencedCp())) {
-                if (!store.release(checkpointToRelease)) {
-                    log.debug("[{}] Unable to release checkpoint {}", name,
-                            checkpointToRelease);
+
+            String checkpointToRelease = afterCheckpoint;
+            boolean updatePostRunStatus = false;
+            try {
+                String newThreadName = "async-index-update-" + name;
+                log.trace("Switching thread name to {}", newThreadName);
+                threadNameChanged = true;
+                Thread.currentThread().setName(newThreadName);
+                updatePostRunStatus = updateIndex(before, beforeCheckpoint, after,
+                        afterCheckpoint, afterTime, callback);
+
+                // the update succeeded, i.e. it no longer fails
+                if (indexStats.didLastIndexingCycleFailed()) {
+                    indexStats.fixed();
+                }
+
+                // the update succeeded, so we can release the earlier checkpoint
+                // otherwise the new checkpoint associated with the failed update
+                // will get released in the finally block
+                checkpointToRelease = beforeCheckpoint;
+                indexStats.setReferenceCheckpoint(afterCheckpoint);
+                indexStats.setProcessedCheckpoint("");
+                indexStats.releaseTempCheckpoint(afterCheckpoint);
+
+            } catch (Exception e) {
+                indexStats.failed(e);
+
+            } finally {
+                if (threadNameChanged) {
+                    log.trace("Switching thread name back to {}", oldThreadName);
+                    Thread.currentThread().setName(oldThreadName);
+                }
+                // null during initial indexing
+                // and skip release if this cp was used in a split operation
+                if (checkpointToRelease != null
+                        && !checkpointToRelease.equals(taskSplitter
+                        .getLastReferencedCp())) {
+                    if (!store.release(checkpointToRelease)) {
+                        log.debug("[{}] Unable to release checkpoint {}", name,
+                                checkpointToRelease);
+                    }
+                }
+                maybeCleanUpCheckpoints();
+
+                if (updatePostRunStatus) {
+                    postAsyncRunStatsStatus(indexStats);
                 }
             }
-            maybeCleanUpCheckpoints();
-
-            if (updatePostRunStatus) {
-                postAsyncRunStatsStatus(indexStats);
-            }
+        } finally {
+            try {
+                callback.close();
+            } catch (CommitFailedException ignore) {}
         }
     }
 
